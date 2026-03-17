@@ -34,6 +34,11 @@ class Ministry extends BaseModel
         'images' => 'array',
     ];
 
+    public function accounts()
+    {
+        return $this->hasMany(MinistryAccount::class, 'ministry_id');
+    }
+
 
 
     //

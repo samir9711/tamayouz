@@ -41,5 +41,11 @@ class Establishment extends BaseModel
     protected $search=['email', 'name'];
 
 
+    public function accounts()
+    {
+        return $this->hasMany(EstablishmentAccount::class, 'establishment_id');
+    }
+
+
     //
 }

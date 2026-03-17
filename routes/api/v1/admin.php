@@ -26,15 +26,16 @@ Route::prefix('admin')->group(function () {
         Route::post('/profile/update', [AdminController::class, 'updateProfile']);
     });
 
-    Route::prefix('ministry')->group(function () {
-        Route::get('/all/paginated', [MinistryController::class, 'allPaginated']);
-        Route::get('/all',           [MinistryController::class, 'all']);
+    Route::prefix('ministry')->middleware('auth:admin')->group(function () {
+
+        Route::get('/all',           [MinistryController::class, 'allWithAccounts']);
         Route::post('/show',         [MinistryController::class, 'show']);
         Route::post('/create',       [MinistryController::class, 'store']);
         Route::post('/update',       [MinistryController::class, 'update']);
         Route::post('/activate',     [MinistryController::class, 'activate']);
         Route::post('/deactivate',   [MinistryController::class, 'deactivate']);
         Route::delete('/destroy',    [MinistryController::class, 'destroy']);
+
     });
 
 
@@ -43,8 +44,8 @@ Route::prefix('admin')->group(function () {
 
 
     Route::prefix('establishment')->middleware('auth:admin')->group(function () {
-        Route::get('/all/paginated', [EstablishmentController::class, 'allPaginated']);
-        Route::get('/all',           [EstablishmentController::class, 'all']);
+
+        Route::get('/all',           [EstablishmentController::class, 'allWithAccounts']);
         Route::post('/show',         [EstablishmentController::class, 'show']);
         Route::post('/create',       [EstablishmentController::class, 'store']);
         Route::post('/update',       [EstablishmentController::class, 'update']);

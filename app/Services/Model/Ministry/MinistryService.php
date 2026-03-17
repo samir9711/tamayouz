@@ -154,48 +154,225 @@ class MinistryService extends BasicCrudService
     {
         $data = $request->validated();
 
+        return DB::transaction(function () use ($request, $data) {
 
-        $authAdmin = auth('admin')->user();
-        $authMin   = auth('ministry')->user();
+            $authAdmin = auth('admin')->user();
+            $authMin   = auth('ministry')->user();
 
+            $idToUpdate = $request->input('id') ?? null;
 
-        $idToUpdate = $request->input('id') ?? null;
+            // إذا المستخدم هو وزارة (account) فقط — حدِّد id الوزارة من صلاحيات الحساب
+            if ($authMin && !$authAdmin) {
+                $ministryOfAccount = $authMin->ministry_id ?? null;
+                if ($ministryOfAccount === null) {
+                    throw ValidationException::withMessages(['auth' => 'Authenticated ministry account has no ministry assigned.']);
+                }
+                $idToUpdate = (int) $ministryOfAccount;
 
-
-        if ($authMin && !$authAdmin) {
-            $ministryOfAccount = $authMin->ministry_id ?? null;
-            if ($ministryOfAccount === null) {
-                throw ValidationException::withMessages(['auth' => 'Authenticated ministry account has no ministry assigned.']);
+                // امنع تغيير ministry_id عبر payload من حساب الوزارة
+                if (array_key_exists('ministry_id', $data)) {
+                    unset($data['ministry_id']);
+                }
+            } else {
+                // إذا ليس admin ولم يصل id → خطأ
+                if (empty($idToUpdate) && !$authAdmin) {
+                    throw ValidationException::withMessages(['id' => 'id is required.']);
+                }
             }
-            $idToUpdate = (int) $ministryOfAccount;
 
-            if (array_key_exists('ministry_id', $data)) {
-                unset($data['ministry_id']);
-            }
-        } else {
+            // جلب الكائن
+            $this->object = $this->model::findOrFail($idToUpdate);
 
-            if (empty($idToUpdate) && !$authAdmin) {
-                throw ValidationException::withMessages(['id' => 'id is required.']);
+            // تحقق أن حساب الوزارة لا يقوم بتعديل وزارة غير تابع لها
+            if ($authMin && !$authAdmin) {
+                if ((int)$this->object->id !== (int)$authMin->ministry_id) {
+                    throw ValidationException::withMessages(['auth' => 'You can only update your own ministry.']);
+                }
             }
+
+            // حدّث حقول الوزارة (استخدم fill لحماية fillable)
+            $this->object->fill($data);
+            $this->object->save();
+
+            // --- معالجة حساب الوزارة (إن وُجدت حقول متعلّقة بالحساب) ---
+            $accountPrepared = false;
+            $accountResult = null;
+
+            $accountId = $request->input('account_id') ?? null;
+            $accountEmail = $request->input('account_email') ?? null;
+            $accountName = $request->input('account_name') ?? null;
+            $accountPassword = $request->input('account_password') ?? null;
+            $accountRole = $request->input('account_role') ?? $request->input('role') ?? null;
+
+            $hasAccountPayload = $accountId || $accountEmail || $accountName || ($accountPassword !== null) || $accountRole;
+
+            if ($hasAccountPayload) {
+                // حاول إيجاد الحساب المستهدف
+                $account = null;
+                if ($accountId) {
+                    $account = MinistryAccount::where('id', (int)$accountId)
+                                ->where('ministry_id', $this->object->id)
+                                ->first();
+                    if (!$account) {
+                        throw ValidationException::withMessages(['account_id' => 'Account not found for this ministry.']);
+                    }
+                } else {
+                    if ($accountEmail) {
+                        $account = MinistryAccount::where('email', $accountEmail)
+                                    ->where('ministry_id', $this->object->id)
+                                    ->first();
+                    }
+                    if (!$account) {
+                        $account = MinistryAccount::where('ministry_id', $this->object->id)->first();
+                    }
+                }
+
+                // لا يوجد حساب للمينستري ولكن تم تقديم email -> أنشئ حساباً جديداً
+                if (!$account && $accountEmail) {
+                    // تحقّق تفرد الإيميل عبر قاعدة البيانات
+                    $exists = MinistryAccount::where('email', $accountEmail)->first();
+                    if ($exists) {
+                        throw ValidationException::withMessages(['account_email' => 'Email already in use by another ministry account.']);
+                    }
+
+                    $plain = $accountPassword ?? Str::random(12);
+                    $roleToUse = $accountRole ?? 'min_admin';
+
+                    $account = MinistryAccount::create([
+                        'ministry_id' => $this->object->id,
+                        'name' => $accountName ?? null,
+                        'email' => $accountEmail,
+                        'password' => Hash::make($plain),
+                        'role' => $roleToUse,
+                    ]);
+
+                    // لا تُرجِع كلمة المرور في الاستجابة في بيئة الإنتاج.
+                    $accountPrepared = true;
+                    $accountResult = $account->toArray();
+                    unset($accountResult['password']); // تأكد من عدم إعادة الحقل
+                } elseif ($account) {
+                    // تحديث الحساب الموجود
+                    $update = [];
+
+                    if ($accountName !== null) $update['name'] = $accountName;
+
+                    if ($accountEmail !== null && (string)$accountEmail !== (string)$account->email) {
+                        $exists = MinistryAccount::where('email', $accountEmail)
+                                    ->where('id', '!=', $account->id)
+                                    ->first();
+                        if ($exists) {
+                            throw ValidationException::withMessages(['account_email' => 'Email already in use by another account.']);
+                        }
+                        $update['email'] = $accountEmail;
+                    }
+
+                    if ($accountPassword !== null && $accountPassword !== '') {
+                        // دوِّن دائماً كلمة المرور المهشّرة
+                        $update['password'] = Hash::make($accountPassword);
+                    }
+
+                    if ($accountRole !== null) {
+                        $update['role'] = $accountRole;
+                    }
+
+                    if (!empty($update)) {
+                        $account->fill($update);
+                        $account->save();
+                        $accountPrepared = true;
+                    }
+
+                    $accountResult = $account->toArray();
+                    unset($accountResult['password']);
+                } else {
+                    // لم يُعثر على حساب ولَمْ يُقدم email للإنشاء
+                    throw ValidationException::withMessages(['account' => 'No account found and no email provided to create one.']);
+                }
+            }
+
+            // أعِد تحميل العلاقات المطلوبة
+            $this->object->loadMissing($this->relations);
+
+            // جهّز المخرجات (Resource أو toArray)
+            if ($this->resource) {
+                $ministryArr = $this->resource::make($this->object)->resolve();
+            } else {
+                $ministryArr = $this->object->toArray();
+            }
+
+            if ($accountPrepared && $accountResult) {
+                $ministryArr['account'] = $accountResult;
+            }
+
+            return $ministryArr;
+        });
+    }
+
+    /**
+     * Paginated list of ministries with their accounts included.
+     */
+    public function allWithAccounts(Request $request): array
+    {
+        $perPage = (int) $request->input('per_page', 10);
+
+        // reuse allQuery() to keep existing filters & auth restrictions
+        $query = $this->allQuery();
+
+        // ensure accounts relation is loaded
+        $query->with('accounts');
+
+        $paginator = $query->paginate($perPage);
+
+        $items = [];
+        foreach ($paginator->items() as $min) {
+            $min->loadMissing('accounts');
+
+            if ($this->resource) {
+                $minArr = $this->resource::make($min)->resolve();
+            } else {
+                $minArr = $min->toArray();
+            }
+
+            // attach accounts
+            $minArr['accounts'] = $min->accounts->map(function ($a) {
+                return $a->toArray();
+            })->all();
+
+            $items[] = $minArr;
         }
 
+        return [
+            Str::plural(strtolower(class_basename($this->model))) => $items,
+            'current_page' => $paginator->currentPage(),
+            'next_page' => $paginator->nextPageUrl(),
+            'previous_page' => $paginator->previousPageUrl(),
+            'total_pages' => $paginator->lastPage(),
+            'total_items' => $paginator->total(),
+        ];
+    }
 
-        $this->object = $this->model::findOrFail($idToUpdate);
+    /**
+     * Return all ministries (no pagination) with accounts included.
+     */
+    public function pureAllWithAccounts(Request $request): array
+    {
+        $query = $this->allQuery()->with('accounts');
 
+        $collection = $query->get();
 
-        if ($authMin && !$authAdmin) {
-            if ((int)$this->object->id !== (int)$authMin->ministry_id) {
-                throw ValidationException::withMessages(['auth' => 'You can only update your own ministry.']);
+        $items = $collection->map(function ($min) {
+            if ($this->resource) {
+                $minArr = $this->resource::make($min)->resolve();
+            } else {
+                $minArr = $min->toArray();
             }
-        }
+            $min->loadMissing('accounts');
+            $minArr['accounts'] = $min->accounts->map->toArray()->all();
+            return $minArr;
+        })->all();
 
-
-        $this->object->update($data);
-
-
-        $this->object->load($this->relations);
-
-        return $this->resource ? $this->resource::make($this->object) : $this->object;
+        return [
+            Str::plural(strtolower(class_basename($this->model))) => $items,
+        ];
     }
 
 }

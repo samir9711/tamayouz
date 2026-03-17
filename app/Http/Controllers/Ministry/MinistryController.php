@@ -30,4 +30,26 @@ class MinistryController extends FatherCrudController
             return $this->handleException($e);
         }
     }
+
+    public function allWithAccounts(Request $request)
+    {
+        try {
+            $svc = app(MinistryService::class);
+            $data = $svc->allWithAccounts($request);
+            return $this->apiResponse($data);
+        } catch (\Exception $e) {
+            return $this->handleException($e);
+        }
+    }
+
+    public function pureAllWithAccounts(Request $request)
+    {
+        try {
+            $svc = app(MinistryService::class);
+            $data = $svc->pureAllWithAccounts($request);
+            return $this->apiResponse($data);
+        } catch (\Exception $e) {
+            return $this->handleException($e);
+        }
+    }
 }
