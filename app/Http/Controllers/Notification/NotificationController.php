@@ -29,10 +29,7 @@ class NotificationController extends FatherCrudController
                 return $this->apiResponse(null, false, 'Unauthenticated.', 401);
             }
 
-            // Optional: check role
-            if (($sender->role ?? '') !== 'min_admin') {
-                return $this->apiResponse(null, false, 'Forbidden. min_admin required.', 403);
-            }
+         
 
             $payload = $request->validated();
 
